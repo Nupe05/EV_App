@@ -1,0 +1,9 @@
+asgiref==3.11.1
+Django==5.0.14
+django-cors-headers==4.3.1
+django-environ==0.11.2
+djangorestframework==3.15.2
+djangorestframework-simplejwt==5.3.1
+packaging @ file:///opt/miniconda3/conda-bld/packaging_1761049079066/work
+PyJWT==2.11.0
+sqlparse==0.5.5
