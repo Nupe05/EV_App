@@ -9,10 +9,11 @@ venv/
 env/
 ENV/
 
-# Environment files
+# Environment variables
 .env
-.env.*
-*.env
+.env.local
+.env.development
+.env.production
 
 # Django
 db.sqlite3
