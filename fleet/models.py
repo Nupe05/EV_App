@@ -25,11 +25,11 @@ class VehicleUnit(models.Model):
     zone = models.ForeignKey(ServiceZone, on_delete=models.SET_NULL, null=True, blank=True)
 
     # Demo-friendly location fields (replace later with telematics/GPS ingestion)
-    lat = models.DecimalField(max_digits=9, decimal_places=6, default=38.9072)   # DC default
-    lng = models.DecimalField(max_digits=9, decimal_places=6, default=-77.0369)
-
+    lat = models.DecimalField(max_digits=9, decimal_places=6, default=38.9072, db_index=True)
+    lng = models.DecimalField(max_digits=9, decimal_places=6, default=-77.0369, db_index=True)
     battery_percent = models.PositiveIntegerField(default=90)  # readiness proxy
     is_active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self) -> str:
         return self.label

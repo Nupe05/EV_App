@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "dispatch",
     "api",
     "channels",
+    "locations",
     
     
 ]
