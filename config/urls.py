@@ -21,8 +21,13 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 urlpatterns = [
     path("admin/", admin.site.urls),
 
+    # Auth
     path("api/auth/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("api/auth/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 
+    # Core APIs
     path("api/", include("api.urls")),
+
+    # Dispatch system
+    path("api/dispatch/", include("dispatch.urls")),
 ]
