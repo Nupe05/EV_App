@@ -56,17 +56,29 @@ async function fetchOsrmRoute(startLat, startLng, endLat, endLng) {
   const routeGeometry =
     route.geometry?.coordinates?.map(([lng, lat]) => [lat, lng]) || [];
 
+  let cursor = 0;
   const steps =
-    leg?.steps?.map((step, idx) => ({
-      id: `${idx}-${step.name || "step"}`,
-      instruction: buildInstruction(step),
-      distanceMeters: step.distance,
-      durationSeconds: step.duration,
-      name: step.name,
-      maneuver: step.maneuver,
-      geometry:
-        step.geometry?.coordinates?.map(([lng, lat]) => [lat, lng]) || [],
-    })) || [];
+    leg?.steps?.map((step, idx) => {
+      const geometry =
+        step.geometry?.coordinates?.map(([lng, lat]) => [lat, lng]) || [];
+
+      const pointCount = Math.max(geometry.length, 1);
+      const startPointIndex = cursor;
+      const endPointIndex = cursor + pointCount - 1;
+      cursor = endPointIndex + 1;
+
+      return {
+        id: `${idx}-${step.name || "step"}`,
+        instruction: buildInstruction(step),
+        distanceMeters: step.distance,
+        durationSeconds: step.duration,
+        name: step.name,
+        maneuver: step.maneuver,
+        geometry,
+        startPointIndex,
+        endPointIndex,
+      };
+    }) || [];
 
   return {
     routeGeometry,
@@ -82,6 +94,9 @@ export default function DriverPanel({ driverToken }) {
   const [routeData, setRouteData] = useState(null);
   const [simRunning, setSimRunning] = useState(false);
   const [loadingRoute, setLoadingRoute] = useState(false);
+  const [currentPointIndex, setCurrentPointIndex] = useState(0);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const [showTurns, setShowTurns] = useState(true);
 
   const simRef = useRef(null);
 
@@ -104,6 +119,16 @@ export default function DriverPanel({ driverToken }) {
     return res.data;
   }
 
+  function getStepIndexForPoint(pointIdx, steps) {
+    if (!steps?.length) return 0;
+
+    const idx = steps.findIndex(
+      (step) => pointIdx >= step.startPointIndex && pointIdx <= step.endPointIndex
+    );
+
+    return idx >= 0 ? idx : Math.max(0, steps.length - 1);
+  }
+
   async function buildRouteForJob(job) {
     if (!job?.pickup_lat || !job?.pickup_lng) return;
 
@@ -120,7 +145,11 @@ export default function DriverPanel({ driverToken }) {
         Number(job.pickup_lat),
         Number(job.pickup_lng)
       );
+
       setRouteData(route);
+      setCurrentPointIndex(0);
+      setCurrentStepIndex(0);
+      setShowTurns(true);
     } catch (err) {
       console.error(err);
       setRouteData(null);
@@ -138,30 +167,50 @@ export default function DriverPanel({ driverToken }) {
 
   async function updateStatus(status) {
     if (!activeJob) return;
+
     await driverApi.post(`/jobs/${activeJob.id}/status/`, { status });
     const job = await loadActiveJob(activeJob.id);
     setActiveJob(job);
+
+    if (status === "ARRIVED") {
+      setCurrentStepIndex(Math.max(0, (routeData?.steps?.length || 1) - 1));
+    }
+    if (status === "COMPLETED") {
+      setSimRunning(false);
+      setShowTurns(false);
+    }
   }
 
   async function startRouteSim() {
     if (!activeJob || !routeData?.routeGeometry?.length || simRunning) return;
 
     setSimRunning(true);
+    setShowTurns(true);
+
     await driverApi.post(`/jobs/${activeJob.id}/status/`, { status: "EN_ROUTE" });
 
     const points = routeData.routeGeometry;
-    let idx = 0;
+
+    const [firstLat, firstLng] = points[0];
+    const firstRes = await driverApi.post(`/jobs/${activeJob.id}/location/`, {
+      lat: firstLat,
+      lng: firstLng,
+    });
+    setActiveJob(firstRes.data);
+    setCurrentPointIndex(0);
+    setCurrentStepIndex(getStepIndexForPoint(0, routeData.steps));
+
+    let idx = 1;
 
     simRef.current = setInterval(async () => {
       try {
-        idx += 1;
-
         if (idx >= points.length) {
           stopRouteSim();
 
           await driverApi.post(`/jobs/${activeJob.id}/status/`, { status: "ARRIVED" });
           const arrivedJob = await loadActiveJob(activeJob.id);
           setActiveJob(arrivedJob);
+          setCurrentStepIndex(Math.max(0, (routeData?.steps?.length || 1) - 1));
 
           setTimeout(async () => {
             await driverApi.post(`/jobs/${activeJob.id}/status/`, { status: "CHARGING" });
@@ -173,6 +222,7 @@ export default function DriverPanel({ driverToken }) {
               const completedJob = await loadActiveJob(activeJob.id);
               setActiveJob(completedJob);
               setSimRunning(false);
+              setShowTurns(false);
             }, 3500);
           }, 1800);
 
@@ -182,6 +232,11 @@ export default function DriverPanel({ driverToken }) {
         const [lat, lng] = points[idx];
         const res = await driverApi.post(`/jobs/${activeJob.id}/location/`, { lat, lng });
         setActiveJob(res.data);
+
+        setCurrentPointIndex(idx);
+        setCurrentStepIndex(getStepIndexForPoint(idx, routeData.steps));
+
+        idx += 1;
       } catch (err) {
         console.error("route sim error", err);
         stopRouteSim();
@@ -198,6 +253,16 @@ export default function DriverPanel({ driverToken }) {
     setSimRunning(false);
   }
 
+  function resetCockpit() {
+    stopRouteSim();
+    setActiveJob(null);
+    setRouteData(null);
+    setCurrentPointIndex(0);
+    setCurrentStepIndex(0);
+    setShowTurns(true);
+    loadOffers();
+  }
+
   function openGoogleMaps() {
     if (!activeJob?.pickup_lat || !activeJob?.pickup_lng) return;
     const url = `https://www.google.com/maps/dir/?api=1&destination=${activeJob.pickup_lat},${activeJob.pickup_lng}&travelmode=driving`;
@@ -210,9 +275,118 @@ export default function DriverPanel({ driverToken }) {
     window.open(url, "_blank");
   }
 
-  const nextTurn = useMemo(() => {
-    return routeData?.steps?.find((s) => s.instruction !== "Arrive at destination") || null;
-  }, [routeData]);
+  const activeStep = useMemo(() => {
+    if (!routeData?.steps?.length) return null;
+    return routeData.steps[currentStepIndex] || routeData.steps[0] || null;
+  }, [routeData, currentStepIndex]);
+
+  const isAssignedState = activeJob?.status === "ASSIGNED";
+  const isEnRouteState = activeJob?.status === "EN_ROUTE";
+  const isArrivedState = activeJob?.status === "ARRIVED";
+  const isChargingState = activeJob?.status === "CHARGING";
+  const isCompletedState = activeJob?.status === "COMPLETED";
+
+  const stateCard = useMemo(() => {
+    if (loadingRoute) {
+      return {
+        label: "Navigation",
+        text: "Building route…",
+        bg: "#0ea5e9",
+      };
+    }
+
+    if (isCompletedState) {
+      return {
+        label: "Job status",
+        text: "Charge complete",
+        bg: "#22c55e",
+      };
+    }
+
+    if (isChargingState) {
+      return {
+        label: "Job status",
+        text: "Charging in progress",
+        bg: "#0ea5e9",
+      };
+    }
+
+    if (isArrivedState) {
+      return {
+        label: "Job status",
+        text: "Arrived at destination",
+        bg: "#0ea5e9",
+      };
+    }
+
+    if (isEnRouteState) {
+      return {
+        label: "Next turn",
+        text: activeStep?.instruction || "Continue to customer",
+        bg: "#0ea5e9",
+      };
+    }
+
+    return {
+      label: "Navigation",
+      text: activeStep?.instruction || "Route ready",
+      bg: "#0ea5e9",
+    };
+  }, [loadingRoute, isCompletedState, isChargingState, isArrivedState, isEnRouteState, activeStep]);
+
+  const primaryAction = useMemo(() => {
+    if (isCompletedState) {
+      return {
+        label: "Reset cockpit",
+        onClick: resetCockpit,
+        disabled: false,
+        style: completeBtn,
+      };
+    }
+
+    if (isChargingState) {
+      return {
+        label: "Mark complete",
+        onClick: () => updateStatus("COMPLETED"),
+        disabled: false,
+        style: completeBtn,
+      };
+    }
+
+    if (isArrivedState) {
+      return {
+        label: "Start charging",
+        onClick: () => updateStatus("CHARGING"),
+        disabled: false,
+        style: primaryBtn,
+      };
+    }
+
+    if (simRunning) {
+      return {
+        label: "Driving…",
+        onClick: () => {},
+        disabled: true,
+        style: primaryBtn,
+      };
+    }
+
+    if (isAssignedState || isEnRouteState) {
+      return {
+        label: "Start route",
+        onClick: startRouteSim,
+        disabled: !routeData,
+        style: primaryBtn,
+      };
+    }
+
+    return {
+      label: "Start route",
+      onClick: startRouteSim,
+      disabled: !routeData,
+      style: primaryBtn,
+    };
+  }, [isCompletedState, isChargingState, isArrivedState, isAssignedState, isEnRouteState, simRunning, routeData]);
 
   return (
     <div style={panel}>
@@ -269,35 +443,57 @@ export default function DriverPanel({ driverToken }) {
             <div style={statusPill(activeJob.status)}>{activeJob.status}</div>
           </div>
 
-          <LiveMap job={activeJob} routeGeometry={routeData?.routeGeometry || []} />
+          <LiveMap
+          job={activeJob}driverOverride={routeData?.routeGeometry?.[currentPointIndex] || null}
+          routeGeometry={(routeData?.routeGeometry || []).slice(currentPointIndex)}/>
 
-          <div style={nextTurnCard}>
-            <div style={nextTurnLabel}>Next turn</div>
-            <div style={nextTurnText}>
-              {loadingRoute
-                ? "Building route…"
-                : nextTurn?.instruction || "Route ready"}
-            </div>
+          <div style={{ ...nextTurnCard, background: stateCard.bg }}>
+            <div style={nextTurnLabel}>{stateCard.label}</div>
+            <div style={nextTurnTextStyle}>{stateCard.text}</div>
+          </div>
+
+          <div style={assignmentStrip}>
+            <span style={assignmentChip}>Job {activeJob.id.slice(0, 8)}…</span>
+            {activeJob.assigned_vehicle_label ? (
+              <span style={assignmentChip}>Unit {activeJob.assigned_vehicle_label}</span>
+            ) : null}
+            <span style={assignmentChip}>Point {currentPointIndex}</span>
           </div>
 
           <div style={controlsWrap}>
-            <button style={primaryBtn} onClick={startRouteSim} disabled={!routeData || simRunning}>
-              {simRunning ? "Driving…" : "Start route"}
+            <button
+              style={primaryAction.style}
+              onClick={primaryAction.onClick}
+              disabled={primaryAction.disabled}
+            >
+              {primaryAction.label}
             </button>
 
             <button style={ghostBtn} onClick={stopRouteSim} disabled={!simRunning}>
               Stop
             </button>
 
-            <button style={ghostBtn} onClick={() => updateStatus("ARRIVED")}>
+            <button
+              style={ghostBtn}
+              onClick={() => updateStatus("ARRIVED")}
+              disabled={isCompletedState || isArrivedState || isChargingState}
+            >
               Arrived
             </button>
 
-            <button style={ghostBtn} onClick={() => updateStatus("CHARGING")}>
+            <button
+              style={ghostBtn}
+              onClick={() => updateStatus("CHARGING")}
+              disabled={isCompletedState || isChargingState}
+            >
               Charging
             </button>
 
-            <button style={completeBtn} onClick={() => updateStatus("COMPLETED")}>
+            <button
+              style={completeBtn}
+              onClick={() => updateStatus("COMPLETED")}
+              disabled={isCompletedState}
+            >
               Complete
             </button>
           </div>
@@ -309,27 +505,61 @@ export default function DriverPanel({ driverToken }) {
             <button style={ghostBtn} onClick={openAppleMaps}>
               Open in Apple Maps
             </button>
+            <button style={ghostBtn} onClick={() => setShowTurns((v) => !v)}>
+              {showTurns ? "Hide turns" : "Show turns"}
+            </button>
           </div>
 
-          <div style={stepsCard}>
-            <div style={stepsTitle}>Turn-by-turn</div>
+          {showTurns && !isCompletedState ? (
+            <div style={stepsCard}>
+              <div style={stepsTitle}>Turn-by-turn</div>
 
-            <div style={{ display: "grid", gap: 10 }}>
-              {(routeData?.steps || []).map((step, idx) => (
-                <div key={step.id} style={stepRow}>
-                  <div style={stepIndex}>{idx + 1}</div>
+              <div style={{ display: "grid", gap: 10 }}>
+                {(routeData?.steps || []).map((step, idx) => {
+                  const isDone = idx < currentStepIndex;
+                  const isActive = idx === currentStepIndex && !isCompletedState;
+                  const isFuture = idx > currentStepIndex;
 
-                  <div style={{ flex: 1 }}>
-                    <div style={stepInstruction}>{step.instruction}</div>
-                    <div style={stepMeta}>
-                      {(step.distanceMeters / 1000).toFixed(2)} km ·{" "}
-                      {Math.max(1, Math.round(step.durationSeconds / 60))} min
+                  return (
+                    <div
+                      key={step.id}
+                      style={{
+                        ...stepRow,
+                        ...(isActive ? activeStepRow : {}),
+                        ...(isDone ? doneStepRow : {}),
+                      }}
+                    >
+                      <div
+                        style={{
+                          ...stepIndex,
+                          ...(isActive ? activeStepIndex : {}),
+                          ...(isDone ? doneStepIndex : {}),
+                        }}
+                      >
+                        {idx + 1}
+                      </div>
+
+                      <div style={{ flex: 1 }}>
+                        <div
+                          style={{
+                            ...stepInstruction,
+                            ...(isFuture ? futureStepInstruction : {}),
+                          }}
+                        >
+                          {step.instruction}
+                        </div>
+
+                        <div style={stepMeta}>
+                          {(step.distanceMeters / 1000).toFixed(2)} km ·{" "}
+                          {Math.max(1, Math.round(step.durationSeconds / 60))} min
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              ))}
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          ) : null}
         </>
       )}
     </div>
@@ -439,6 +669,22 @@ const chipGray = {
   fontSize: 12,
 };
 
+const assignmentStrip = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap",
+};
+
+const assignmentChip = {
+  padding: "5px 10px",
+  borderRadius: 999,
+  background: "#f8fafc",
+  border: "1px solid #e5e7eb",
+  color: "#334155",
+  fontWeight: 800,
+  fontSize: 12,
+};
+
 function statusPill(status) {
   return {
     padding: "6px 10px",
@@ -454,7 +700,6 @@ function statusPill(status) {
 const nextTurnCard = {
   padding: 14,
   borderRadius: 16,
-  background: "#0ea5e9",
   color: "white",
 };
 
@@ -464,7 +709,7 @@ const nextTurnLabel = {
   fontWeight: 800,
 };
 
-const nextTurnText = {
+const nextTurnTextStyle = {
   fontSize: 20,
   fontWeight: 950,
   marginTop: 4,
@@ -529,6 +774,17 @@ const stepRow = {
   display: "flex",
   gap: 12,
   alignItems: "flex-start",
+  padding: "8px 8px",
+  borderRadius: 12,
+  transition: "all 180ms ease",
+};
+
+const activeStepRow = {
+  background: "#eff6ff",
+};
+
+const doneStepRow = {
+  opacity: 0.72,
 };
 
 const stepIndex = {
@@ -544,9 +800,23 @@ const stepIndex = {
   flex: "0 0 auto",
 };
 
+const activeStepIndex = {
+  background: "#0ea5e9",
+  color: "white",
+};
+
+const doneStepIndex = {
+  background: "#bbf7d0",
+  color: "#166534",
+};
+
 const stepInstruction = {
   fontWeight: 800,
   color: "#0f172a",
+};
+
+const futureStepInstruction = {
+  color: "#334155",
 };
 
 const stepMeta = {

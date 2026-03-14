@@ -9,8 +9,27 @@ export default function CustomerPanel({ customerToken }) {
   const { status: wsStatus, lastMessage } = useJobSocket(job?.id);
 
   useEffect(() => {
-    if (lastMessage?.id) setJob(lastMessage);
+    if (lastMessage?.id) {
+      setJob(lastMessage);
+    }
   }, [lastMessage]);
+
+  // Polling fallback while job is active
+  useEffect(() => {
+    if (!job?.id) return;
+    if (job.status === "COMPLETED" || job.status === "CANCELED") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await customerApi.get(`/jobs/${job.id}/`);
+        setJob(res.data);
+      } catch (err) {
+        console.log("customer refresh fallback failed", err);
+      }
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [job?.id, job?.status]);
 
   async function requestHelp() {
     if (!customerToken) return;
@@ -39,6 +58,10 @@ export default function CustomerPanel({ customerToken }) {
     setJob(res.data);
   }
 
+  const isCompleted = job?.status === "COMPLETED";
+  const isCanceled = job?.status === "CANCELED";
+  const hasJob = !!job;
+
   return (
     <div style={panel}>
       <h2 style={header}>Customer</h2>
@@ -49,26 +72,30 @@ export default function CustomerPanel({ customerToken }) {
           onClick={requestHelp}
           disabled={!customerToken}
         >
-          Request Emergency Charge
+          {isCompleted || isCanceled ? "Request Another Charge" : "Request Emergency Charge"}
         </button>
 
-        {job && (
+        {hasJob && (
           <div style={jobMeta}>
-            <span>WS: <b>{wsStatus}</b></span>
+            <span>
+              WS: <b>{wsStatus}</b>
+            </span>
 
-            <button style={ghostBtn} onClick={refreshJob}>
-              Refresh
-            </button>
+            {!isCompleted && !isCanceled ? (
+              <button style={ghostBtn} onClick={refreshJob}>
+                Refresh
+              </button>
+            ) : null}
 
             <span>
               Job: <b>{job.id.slice(0, 8)}…</b>
             </span>
 
-            {job.distance_km != null && (
+            {job.distance_km != null ? (
               <span>
                 Driver distance: <b>{job.distance_km} km</b>
               </span>
-            )}
+            ) : null}
           </div>
         )}
       </div>
@@ -79,11 +106,38 @@ export default function CustomerPanel({ customerToken }) {
         </div>
       )}
 
-      {job && (
+      {isCompleted && (
+        <div style={completedBanner}>
+          <div style={completedTitle}>Service completed</div>
+          <div style={completedText}>
+            Your emergency charge was successfully delivered. You can request assistance again anytime.
+          </div>
+        </div>
+      )}
+
+      {isCanceled && (
+        <div style={canceledBanner}>
+          <div style={completedTitle}>Request canceled</div>
+          <div style={completedText}>
+            This request is no longer active. You can request assistance again whenever needed.
+          </div>
+        </div>
+      )}
+
+      {hasJob ? (
         <div style={contentStack}>
           <Timeline job={job} />
           <LiveMap job={job} />
         </div>
+      ) : (
+        customerToken && (
+          <div style={emptyState}>
+            <div style={emptyTitle}>Assistance is one tap away</div>
+            <div style={emptyText}>
+              Request a mobile charge and follow the technician live from assignment to completion.
+            </div>
+          </div>
+        )
       )}
     </div>
   );
@@ -129,6 +183,53 @@ const contentStack = {
   display: "flex",
   flexDirection: "column",
   gap: 10,
+};
+
+const emptyState = {
+  background: "white",
+  border: "1px solid #e5e7eb",
+  borderRadius: 18,
+  padding: 18,
+};
+
+const emptyTitle = {
+  fontSize: 18,
+  fontWeight: 900,
+  color: "#0f172a",
+};
+
+const emptyText = {
+  marginTop: 6,
+  fontSize: 14,
+  color: "#64748b",
+  lineHeight: 1.5,
+};
+
+const completedBanner = {
+  background: "#ecfdf5",
+  border: "1px solid #bbf7d0",
+  borderRadius: 16,
+  padding: 14,
+};
+
+const canceledBanner = {
+  background: "#fff7ed",
+  border: "1px solid #fed7aa",
+  borderRadius: 16,
+  padding: 14,
+};
+
+const completedTitle = {
+  fontSize: 16,
+  fontWeight: 900,
+  color: "#0f172a",
+};
+
+const completedText = {
+  marginTop: 4,
+  fontSize: 14,
+  color: "#475569",
+  lineHeight: 1.5,
 };
 
 const primaryBtn = {

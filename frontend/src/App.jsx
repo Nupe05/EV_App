@@ -3,33 +3,60 @@ import CustomerPanel from "./pages/CustomerPanel";
 import DriverPanel from "./pages/DriverPanel";
 import LoginBox from "./components/LoginBox";
 import { useLocalStorage } from "./hooks/useLocalStorage";
-import { customerApi, driverApi, setCustomerToken, setDriverToken } from "./api/clients";
+import {
+  customerApi,
+  driverApi,
+  setCustomerTokens,
+  setDriverTokens,
+} from "./api/clients";
 
 export default function App() {
-  const [mode, setMode] = useState("split"); // customer|driver|split
+  const [mode, setMode] = useState("split");
 
-  const [customerToken, setCustomerTokenLS] = useLocalStorage("demo_customer_access", "");
-  const [driverToken, setDriverTokenLS] = useLocalStorage("demo_driver_access", "");
+  const [customerAccess, setCustomerAccess] = useLocalStorage("demo_customer_access", "");
+  const [customerRefresh, setCustomerRefresh] = useLocalStorage("demo_customer_refresh", "");
 
-  // Apply tokens to their respective axios clients
-  useEffect(() => setCustomerToken(customerToken || null), [customerToken]);
-  useEffect(() => setDriverToken(driverToken || null), [driverToken]);
+  const [driverAccess, setDriverAccess] = useLocalStorage("demo_driver_access", "");
+  const [driverRefresh, setDriverRefresh] = useLocalStorage("demo_driver_refresh", "");
+
+  useEffect(() => {
+    setCustomerTokens(customerAccess || "", customerRefresh || "");
+  }, [customerAccess, customerRefresh]);
+
+  useEffect(() => {
+    setDriverTokens(driverAccess || "", driverRefresh || "");
+  }, [driverAccess, driverRefresh]);
+
+  function clearAll() {
+    setCustomerAccess("");
+    setCustomerRefresh("");
+    setDriverAccess("");
+    setDriverRefresh("");
+  }
 
   return (
     <div style={{ padding: 18, fontFamily: "ui-sans-serif, system-ui", background: "#0b1220", minHeight: "100vh" }}>
-      <div style={{ maxWidth: 1200, margin: "0 auto" }}>
-        <div style={{ color: "white", fontSize: 22, fontWeight: 900 }}>EV Rescue Demo Console</div>
-        <div style={{ color: "#cbd5e1", marginTop: 6 }}>Customer + Driver logged in simultaneously · Live timeline via WebSocket</div>
+      <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+        <div style={{ color: "white", fontSize: 22, fontWeight: 900 }}>
+          EV Rescue Demo Console
+        </div>
+
+        <div style={{ color: "#cbd5e1", marginTop: 6 }}>
+          Customer + Driver logged in simultaneously · Live timeline via WebSocket
+        </div>
 
         <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button style={tabBtn(mode === "customer")} onClick={() => setMode("customer")}>Customer</button>
-          <button style={tabBtn(mode === "driver")} onClick={() => setMode("driver")}>Driver</button>
-          <button style={tabBtn(mode === "split")} onClick={() => setMode("split")}>Split</button>
+          <button style={tabBtn(mode === "customer")} onClick={() => setMode("customer")}>
+            Customer
+          </button>
+          <button style={tabBtn(mode === "driver")} onClick={() => setMode("driver")}>
+            Driver
+          </button>
+          <button style={tabBtn(mode === "split")} onClick={() => setMode("split")}>
+            Split
+          </button>
 
-          <button
-            style={{ ...tabBtn(false), marginLeft: "auto" }}
-            onClick={() => { setCustomerTokenLS(""); setDriverTokenLS(""); }}
-          >
+          <button style={{ ...tabBtn(false), marginLeft: "auto" }} onClick={clearAll}>
             Clear both logins
           </button>
         </div>
@@ -40,23 +67,43 @@ export default function App() {
             apiClient={customerApi}
             defaultUsername="customer1"
             defaultPassword="monique05"
-            onToken={(t) => setCustomerTokenLS(t)}
+            onTokens={(access, refresh) => {
+              setCustomerAccess(access);
+              setCustomerRefresh(refresh);
+            }}
           />
+
           <LoginBox
             label="Driver"
             apiClient={driverApi}
             defaultUsername="driver1"
             defaultPassword="monique05"
-            onToken={(t) => setDriverTokenLS(t)}
+            onTokens={(access, refresh) => {
+              setDriverAccess(access);
+              setDriverRefresh(refresh);
+            }}
           />
+
           <div style={{ color: "#64748b", fontSize: 13 }}>
-            Customer and Driver tokens are stored separately and applied to separate API clients.
+            Customer and Driver sessions auto-refresh in the background.
           </div>
         </div>
 
-        <div style={{ marginTop: 14, display: mode === "split" ? "grid" : "block", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-          {(mode === "customer" || mode === "split") && <CustomerPanel customerToken={customerToken} />}
-          {(mode === "driver" || mode === "split") && <DriverPanel driverToken={driverToken} />}
+        <div
+          style={{
+            marginTop: 14,
+            display: mode === "split" ? "grid" : "block",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 14,
+          }}
+        >
+          {(mode === "customer" || mode === "split") && (
+            <CustomerPanel customerToken={customerAccess} />
+          )}
+
+          {(mode === "driver" || mode === "split") && (
+            <DriverPanel driverToken={driverAccess} />
+          )}
         </div>
       </div>
     </div>
